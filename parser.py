@@ -161,6 +161,18 @@ class HTMLParser:
         except Exception:
             logger.warning("cannot extract headers", exc_info=True)
 
+        tables = []
+        try:
+            tables = self._extract_tables(soup)
+        except Exception:
+            logger.warning("cannot extract tables", exc_info=True)
+
+        lists = []
+        try:
+            lists = self._extract_lists(soup)
+        except Exception:
+            logger.warning("cannot extract lists", exc_info=True)
+
         return {
             "url": url,
             "title": metadata.get("title"),
@@ -169,6 +181,8 @@ class HTMLParser:
             "images": images,
             "metadata": metadata,
             "headers": headers,
+            "tables": tables,
+            "lists": lists,
             "statistics": {
                 "text_length": len(text),
                 "links_count": len(links),

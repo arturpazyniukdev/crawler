@@ -8,6 +8,7 @@ from parser import HTMLParser
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO)
 
+
 async def main():
     crawler = AsyncCrawler(max_concurrent=5, html_parser=HTMLParser())
     urls = [

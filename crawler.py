@@ -16,18 +16,22 @@ logger = logging.getLogger(__name__)
 
 class AsyncCrawler:
     def __init__(
-        self, html_parser: HTMLParser, max_concurrent: int = 10, per_domain=5, max_depth=1
+        self,
+        html_parser: HTMLParser | None = None,
+        max_concurrent: int = 10,
+        per_domain=5,
+        max_depth=1,
     ):
         self._max_concurrent = max_concurrent
         self._session = None
-        self._html_parser = html_parser
+        self._html_parser = html_parser or HTMLParser()
         self._semaphores = SemaphoreManager(self._max_concurrent, per_domain)
         self._only_domains = None
         self._exclude_patterns = None
         self._include_patterns = None
         self._max_depth = max_depth
 
-    async def fetch_url(self, url: str) -> (None | str) | (str | None):
+    async def _fetch(self, url: str) -> (None | str) | (str | None):
         if self._session is None:
             connector = TCPConnector(limit=self._max_concurrent, limit_per_host=10)
             timeout = ClientTimeout(connect=5, sock_read=10)
@@ -59,17 +63,21 @@ class AsyncCrawler:
 
         return (html, None)
 
+    async def fetch_url(self, url: str) -> str | None:
+        html, _ = await self._fetch(url)
+        return html
+
     async def fetch_urls(self, urls: list[str]) -> dict[str, str | None]:
         coros = [self.fetch_url(url) for url in urls]
         results = await asyncio.gather(*coros)
         return dict(zip(urls, results, strict=True))
 
     async def fetch_and_parse(self, url: str) -> dict:
-        html, error = await self.fetch_url(url)
+        html, error = await self._fetch(url)
         if html is None:
-            return {"status": "error", "error": error, "url": url}
+            return {"error": error, "url": url}
         parsed = await self._html_parser.parse_html(html, url)
-        return {"status": "success", "data": parsed}
+        return parsed
 
     async def fetch_and_parse_many(self, urls):
         coros = [self.fetch_and_parse(url) for url in urls]
@@ -120,26 +128,22 @@ class AsyncCrawler:
             try:
                 async with self._semaphores.acquire(url):
                     res = await self.fetch_and_parse(url)
-                if (
-                    "data" in res
-                    and res["data"] is not None
-                    and "links" in res["data"]
-                    and len(res["data"]["links"]) > 0
-                    and depth < self._max_depth
-                ):
+
+                links = res.get("links", [])
+                if links and depth < self._max_depth:
                     new_links = [
                         i
-                        for i in res["data"]["links"]
+                        for i in links
                         if not self._queue.is_known(i)
                         and self._is_domain_allowed(i)
                         and self._is_url_allowed(i)
                     ]
                     for n in new_links:
                         self._queue.add_url(n, priority=depth, depth=depth + 1)
-                if res["status"] == "success":
-                    self._queue.mark_processed(url, res)
-                elif res["status"] == "error":
+                if "error" in res:
                     self._queue.mark_failed(url, res["error"])
+                else:
+                    self._queue.mark_processed(url, res)
             finally:
                 self._queue.task_done()
 
