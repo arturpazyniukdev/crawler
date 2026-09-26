@@ -2,6 +2,8 @@ import asyncio
 import contextlib
 import logging
 import time
+from dataclasses import dataclass
+from datetime import UTC, datetime
 from urllib.parse import urlparse
 
 from aiohttp import ClientError, ClientResponseError, ClientSession, ClientTimeout, TCPConnector
@@ -13,9 +15,17 @@ from rate_limiter import RateLimiter
 from retry import RetryStrategy
 from robots import RobotsParser
 from semaphore import SemaphoreManager
+from storage import DataStorage
 from urls import normalize_url
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass
+class FetchResult:
+    html: str
+    status: int
+    content_type: str
 
 
 class AsyncCrawler:
@@ -35,6 +45,7 @@ class AsyncCrawler:
         connect_timeout=5.0,
         read_timeout=10.0,
         total_timeout=30.0,
+        storage: DataStorage | None = None,
     ):
         self._max_concurrent = max_concurrent
         self._session = None
@@ -51,6 +62,8 @@ class AsyncCrawler:
         self._blocked = 0
         self._retry_strategy = retry_strategy or RetryStrategy()
         self._timeouts = (connect_timeout, read_timeout, total_timeout)
+        self._storage = storage
+        self._save_failures = 0
 
     async def _get_session(self) -> ClientSession:
         if self._session is None:
@@ -63,7 +76,7 @@ class AsyncCrawler:
             self._robots = RobotsParser(self._session)
         return self._session
 
-    async def fetch_url(self, url: str, attempt: int = 0) -> str:
+    async def _fetch_response(self, url: str, attempt: int = 0) -> FetchResult:
         session = await self._get_session()
         connect, read, total = self._timeouts
         scale = 1 + attempt
@@ -76,6 +89,8 @@ class AsyncCrawler:
             async with session.get(url, timeout=timeout) as resp:
                 resp.raise_for_status()
                 html = await resp.text()
+                status = resp.status
+                content_type = resp.headers.get("Content-Type", "")
                 logger.info(f"successfully finished for {url}, status {resp.status}")
         except ClientResponseError as e:
             status = e.status
@@ -87,7 +102,10 @@ class AsyncCrawler:
         except ClientError as e:
             raise NetworkError(url, repr(e)) from e
 
-        return html
+        return FetchResult(html, status, content_type)
+
+    async def fetch_url(self, url: str, attempt: int = 0) -> str:
+        return (await self._fetch_response(url, attempt)).html
 
     async def fetch_urls(self, urls: list[str]) -> dict[str, str | BaseException]:
         coros = [self.fetch_url(url) for url in urls]
@@ -95,11 +113,15 @@ class AsyncCrawler:
         return dict(zip(urls, results, strict=True))
 
     async def fetch_and_parse(self, url: str, attempt=0) -> dict:
-        html = await self.fetch_url(url, attempt)
+        fetched = await self._fetch_response(url, attempt)
         try:
-            return await self._html_parser.parse_html(html, url)
+            page = await self._html_parser.parse_html(fetched.html, url)
         except Exception as e:
             raise ParseError(url, repr(e)) from e
+        page["status_code"] = fetched.status
+        page["content_type"] = fetched.content_type
+        page["crawled_at"] = datetime.now(UTC)
+        return page
 
     async def fetch_and_parse_many(self, urls):
         coros = [self.fetch_and_parse(url) for url in urls]
@@ -145,6 +167,21 @@ class AsyncCrawler:
         async with self._semaphores.acquire(url):
             return await self.fetch_and_parse(url, attempt)
 
+    async def _save(self, page: dict) -> None:
+        if self._storage is None:
+            return
+        for attempt in range(3):
+            try:
+                await self._storage.save(page)
+                return
+            except Exception:
+                logger.warning(
+                    "save failed for %s, attempt %d", page["url"], attempt + 1, exc_info=True
+                )
+                await asyncio.sleep(0.1 * 2**attempt)
+        logger.error("giving up saving %s", page["url"])
+        self._save_failures += 1
+
     async def _worker(self, max_pages):
         while True:
             if self._queue.claimed_count() >= max_pages:
@@ -186,6 +223,7 @@ class AsyncCrawler:
                     for n in new_links:
                         self._queue.add_url(n, priority=depth, depth=depth + 1)
                 self._queue.mark_processed(url, res)
+                await self._save(res)
             finally:
                 self._queue.task_done()
 
@@ -199,6 +237,7 @@ class AsyncCrawler:
     ):
         self._queue = CrawlerQueue()
         self._blocked = 0
+        self._save_failures = 0
         self._exclude_patterns = exclude_patterns
         self._include_patterns = include_patterns
         normalized = [normalize_url(el) for el in start_urls]
@@ -224,9 +263,12 @@ class AsyncCrawler:
             "blocked": self._blocked,
             "avg_delay": round(self._rate_limiter.avg_delay, 2),
             "errors": self._retry_strategy.get_stats(),
+            "save_failures": self._save_failures,
         }
 
     async def close(self):
         if isinstance(self._session, ClientSession):
             await self._session.close()
             self._session = None
+        if self._storage is not None:
+            await self._storage.close()

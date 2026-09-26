@@ -2,3 +2,6 @@
 __pycache__/
 *.pyc
 results.json
+demo/results.jsonl
+demo/results.csv
+demo/crawler.db
