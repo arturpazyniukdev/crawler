@@ -44,7 +44,7 @@ def read_csv(path: Path) -> None:
         rows = list(reader)
         fieldnames = reader.fieldnames or []
     first = rows[0]
-    links = json.loads(first["links"])  # list came back as JSON text in one cell
+    links = json.loads(first["links"])
     print(f"csv     {len(rows)} rows, {len(fieldnames)} columns; first: {first['title']!r}")
     print(f"        links cell -> list of {len(links)}, type {type(links).__name__}")
 
@@ -66,7 +66,7 @@ def read_sqlite(path: Path) -> None:
 
 async def main() -> None:
     for p in (JSON_PATH, CSV_PATH, DB_PATH):
-        p.unlink(missing_ok=True)  # storages append; stale files would double the rows
+        p.unlink(missing_ok=True)
 
     print("=== crawl into each storage ===")
     await crawl_into(JSONStorage(JSON_PATH), "json")

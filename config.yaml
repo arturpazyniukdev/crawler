@@ -1,0 +1,13 @@
+start_urls:
+  - https://books.toscrape.com/
+max_pages: 20
+max_depth: 2
+max_concurrent: 5
+requests_per_second: 5
+respect_robots: false
+same_domain_only: true
+exclude_patterns: ["/reviews/"]
+storage_type: sqlite
+storage_path: output/crawler.db
+log_file: output/crawler.log
+log_level: INFO

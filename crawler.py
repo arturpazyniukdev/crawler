@@ -140,26 +140,38 @@ class AsyncCrawler:
             return False
         return True
 
-    async def _report_progress(self):
+    async def _report_progress(self, max_pages: int):
         start = time.perf_counter()
         prev = 0
         while True:
             await asyncio.sleep(1)
             stats = self._queue.get_stats()
             elapsed = time.perf_counter() - start
-            rate = stats["processed"] / elapsed
-            logger.info(
-                {
-                    "processed": stats["processed"],
-                    "queued": stats["queued"],
-                    "failed": stats["failed"],
-                    "blocked": self._blocked,
-                    "rate": f"{round(rate, 2)} websites per second",
-                    "current_rps": stats["processed"] - prev,
-                    "avg_delay": self._rate_limiter.avg_delay,
-                }
+            done = stats["processed"] + stats["failed"]
+            avg_rate = done / elapsed if elapsed > 0 else 0
+            current = done - prev
+            prev = done
+            remaining = max_pages - done
+            eta = remaining / avg_rate if avg_rate else float("inf")
+            pct = min(100, done / max_pages * 100)
+            filled = int(pct / 5)
+            bar = "█" * filled + "░" * (20 - filled)
+            line = (
+                f"\r[{bar}] {pct:5.1f}% {done}/{max_pages} | {current}/s avg {avg_rate:.1f}/s"
+                f" | eta {eta:.0f}s | active {self._semaphores.active} queued {stats['queued']}"
             )
-            prev = stats["processed"]
+            print(line, end="", flush=True)
+            logger.debug(
+                "progress %d/%d (%.1f%%) rate %d/s avg %.1f/s eta %.0fs active %d queued %d",
+                done,
+                max_pages,
+                pct,
+                current,
+                avg_rate,
+                eta,
+                self._semaphores.active,
+                stats["queued"],
+            )
 
     async def _fetch_one(self, url, attempt=0):
         delay = self._robots.get_crawl_delay(url, self._user_agent) if self._respect_robots else 0.0
@@ -248,7 +260,7 @@ class AsyncCrawler:
             self._queue.add_url(i, priority=-1)
 
         coros = [self._worker(max_pages) for _ in range(self._max_concurrent)]
-        reporter = asyncio.create_task(self._report_progress())
+        reporter = asyncio.create_task(self._report_progress(max_pages))
         try:
             await asyncio.gather(*coros)
         finally:
@@ -256,6 +268,7 @@ class AsyncCrawler:
             with contextlib.suppress(asyncio.CancelledError):
                 await reporter
 
+        print()
         return {
             "processed": self._queue._processed_urls,
             "failed": self._queue._failed_urls,

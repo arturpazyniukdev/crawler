@@ -5,3 +5,8 @@ results.json
 demo/results.jsonl
 demo/results.csv
 demo/crawler.db
+demo/stats.json
+demo/report.html
+crawler.log*
+demo/cli.*
+output/
