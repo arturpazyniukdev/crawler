@@ -2,6 +2,7 @@ import csv
 import io
 import json
 from abc import ABC, abstractmethod
+from asyncio import Lock
 from datetime import datetime
 
 import aiofiles
@@ -23,10 +24,12 @@ class JSONStorage(DataStorage):
         self._path = path
         self._indent = indent
         self._file = None
+        self._lock = Lock()
 
     async def _get_file(self):
-        if self._file is None:
-            self._file = await aiofiles.open(self._path, "a", encoding="utf-8")
+        async with self._lock:
+            if self._file is None:
+                self._file = await aiofiles.open(self._path, "a", encoding="utf-8")
         return self._file
 
     async def save(self, data: dict):
@@ -46,10 +49,14 @@ class CSVStorage(DataStorage):
         self._encoding = encoding
         self._file = None
         self._fieldnames = None
+        self._lock = Lock()
 
     async def _get_file(self):
-        if self._file is None:
-            self._file = await aiofiles.open(self._path, "a", encoding=self._encoding, newline="")
+        async with self._lock:
+            if self._file is None:
+                self._file = await aiofiles.open(
+                    self._path, "a", encoding=self._encoding, newline=""
+                )
         return self._file
 
     def _row(self, data: dict) -> dict:
@@ -93,6 +100,7 @@ class SQLiteStorage(DataStorage):
         self._batch_size = batch_size
         self._db = None
         self._buffer = []
+        self._lock = Lock()
 
     async def init_db(self) -> None:
         self._db = await aiosqlite.connect(self._path)
@@ -123,21 +131,25 @@ class SQLiteStorage(DataStorage):
         return value
 
     async def save(self, data: dict):
-        if self._db is None:
-            await self.init_db()
+        async with self._lock:
+            if self._db is None:
+                await self.init_db()
         row = tuple(self._to_cell(data.get(c)) for c in self.COLUMNS)
         self._buffer.append(row)
         if len(self._buffer) >= self._batch_size:
             await self.flush()
 
     async def flush(self):
-        if not self._buffer:
-            return
-        placeholders = ", ".join("?" * len(self.COLUMNS))
-        sql = f"INSERT OR REPLACE INTO pages ({', '.join(self.COLUMNS)}) VALUES ({placeholders})"
-        await self._db.executemany(sql, self._buffer)
-        await self._db.commit()
-        self._buffer.clear()
+        async with self._lock:
+            if not self._buffer:
+                return
+            placeholders = ", ".join("?" * len(self.COLUMNS))
+            sql = (
+                f"INSERT OR REPLACE INTO pages ({', '.join(self.COLUMNS)}) VALUES ({placeholders})"
+            )
+            await self._db.executemany(sql, self._buffer)
+            await self._db.commit()
+            self._buffer.clear()
 
     async def close(self):
         await self.flush()

@@ -34,6 +34,7 @@ From Python:
 import asyncio
 from advanced import AdvancedCrawler
 
+
 async def main():
     crawler = AdvancedCrawler.from_config("config.yaml")
     try:
@@ -42,6 +43,7 @@ async def main():
         await crawler.close()
     print(crawler.get_stats())
     crawler.export_to_html_report("output/report.html")
+
 
 asyncio.run(main())
 ```
