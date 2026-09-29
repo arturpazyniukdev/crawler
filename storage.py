@@ -27,15 +27,15 @@ class JSONStorage(DataStorage):
         self._lock = Lock()
 
     async def _get_file(self):
-        async with self._lock:
-            if self._file is None:
-                self._file = await aiofiles.open(self._path, "a", encoding="utf-8")
+        if self._file is None:
+            self._file = await aiofiles.open(self._path, "a", encoding="utf-8")
         return self._file
 
     async def save(self, data: dict):
-        f = await self._get_file()
         line = json.dumps(data, ensure_ascii=False, indent=self._indent, default=str)
-        await f.write(line + "\n")
+        async with self._lock:
+            f = await self._get_file()
+            await f.write(line + "\n")
 
     async def close(self):
         if self._file:
@@ -52,11 +52,8 @@ class CSVStorage(DataStorage):
         self._lock = Lock()
 
     async def _get_file(self):
-        async with self._lock:
-            if self._file is None:
-                self._file = await aiofiles.open(
-                    self._path, "a", encoding=self._encoding, newline=""
-                )
+        if self._file is None:
+            self._file = await aiofiles.open(self._path, "a", encoding=self._encoding, newline="")
         return self._file
 
     def _row(self, data: dict) -> dict:
@@ -66,16 +63,17 @@ class CSVStorage(DataStorage):
         }
 
     async def save(self, data: dict) -> None:
-        f = await self._get_file()
-        first = self._fieldnames is None
-        if first:
-            self._fieldnames = list(data.keys())
-        buf = io.StringIO()
-        writer = csv.DictWriter(buf, fieldnames=self._fieldnames)
-        if first:
-            writer.writeheader()
-        writer.writerow(self._row(data))
-        await f.write(buf.getvalue())
+        async with self._lock:
+            f = await self._get_file()
+            first = self._fieldnames is None
+            if first:
+                self._fieldnames = list(data.keys())
+            buf = io.StringIO()
+            writer = csv.DictWriter(buf, fieldnames=self._fieldnames)
+            if first:
+                writer.writeheader()
+            writer.writerow(self._row(data))
+            await f.write(buf.getvalue())
 
     async def close(self):
         if self._file:
